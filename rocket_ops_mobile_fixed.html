@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>ROCKET OPS: 衛星分離まで</title>
+<style>
+  :root{--bg:#07111f;--panel:#0e2036;--line:#214b73;--text:#eaf6ff;--sub:#8fb8d8;--ok:#73e3a1;--warn:#ffd166;--bad:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(#07111f,#02070e);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+  #wrap{height:100vh;display:grid;grid-template-columns:minmax(0,1fr) 360px}
+  #game{width:100%;height:100%;display:block;background:#07111f}
+  #ui{background:rgba(7,17,31,.96);border-left:1px solid var(--line);padding:14px;overflow:auto}
+  h1{font-size:20px;margin:0 0 8px}
+  .small{font-size:12px;color:var(--sub);line-height:1.5}
+  .status{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px}
+  .big{font-size:22px;font-weight:700}
+  #msg{min-height:70px;white-space:pre-line}
+  .actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+  button{border:1px solid #315f89;background:#12304f;color:white;border-radius:12px;padding:12px 10px;font-size:14px;font-weight:700}
+  button:active{transform:scale(.98)}
+  button.ready{outline:2px solid var(--warn);box-shadow:0 0 20px #ffd16655}
+  button.done{opacity:.45}
+  #reset{grid-column:1/-1;background:#3a1b24;border-color:#7a3443}
+  .timeline{margin-top:12px}
+  .step{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #183550;font-size:12px}
+  .dot{width:10px;height:10px;border-radius:50%;background:#496278;flex:0 0 auto}
+  .step.done .dot{background:var(--ok)}
+  .step.current .dot{background:var(--warn);box-shadow:0 0 10px var(--warn)}
+  #mobileHint{display:none}
+  @media (max-width: 900px){
+    #wrap{grid-template-columns:1fr;grid-template-rows:58vh 42vh}
+    #ui{border-left:0;border-top:1px solid var(--line);padding:10px}
+    h1{font-size:17px}
+    .status{grid-template-columns:repeat(4,1fr)}
+    .card{padding:7px}
+    .big{font-size:16px}
+    .actions{grid-template-columns:repeat(4,1fr)}
+    button{padding:10px 5px;font-size:11px}
+    #reset{grid-column:1/-1}
+    .timeline{display:none}
+    #mobileHint{display:block}
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+  <aside id="ui">
+    <h1>🚀 ROCKET OPS</h1>
+    <div class="small">点火から衛星分離まで、自分の手でミッションを進める簡易ロケット運用ゲーム。Legion Goはキーボード/ゲームパッド、スマホは画面ボタンで遊べます。</div>
+    <div class="status">
+      <div class="card"><div class="small">MET</div><div class="big" id="met">T-10.0</div></div>
+      <div class="card"><div class="small">高度</div><div class="big" id="alt">0 km</div></div>
+      <div class="card"><div class="small">速度</div><div class="big" id="spd">0 km/s</div></div>
+      <div class="card"><div class="small">スコア</div><div class="big" id="score">100</div></div>
+    </div>
+    <div class="card" id="msg">ミッション開始待機中。
+「主エンジン点火」を押してください。</div>
+
+    <div class="actions">
+      <button data-action="ignite">A / Enter<br>主エンジン点火</button>
+      <button data-action="booster">B / B<br>補助ブースター分離</button>
+      <button data-action="fairing">X / F<br>フェアリング分離</button>
+      <button data-action="meco">Y / M<br>1段エンジン停止</button>
+      <button data-action="stage">LB / S<br>1段分離</button>
+      <button data-action="second">RB / 2<br>2段エンジン点火</button>
+      <button data-action="seco">LT / C<br>2段エンジン停止</button>
+      <button data-action="sat">RT / D<br>衛星分離</button>
+      <button id="reset">ミッションを最初から</button>
+    </div>
+
+    <div id="mobileHint" class="small">※ 横向きにすると遊びやすいです。</div>
+
+    <div class="timeline" id="timeline"></div>
+  </aside>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W=0,H=0,DPR=1;
+
+function resize(){
+  const r=canvas.getBoundingClientRect();
+  DPR=Math.min(devicePixelRatio||1,2);
+  canvas.width=r.width*DPR; canvas.height=r.height*DPR;
+  W=r.width;H=r.height;ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener('resize',resize); resize();
+
+const steps = [
+ {id:'ignite', name:'主エンジン点火', target:-3, tol:99},
+ {id:'booster',name:'補助ブースター分離', target:115, tol:18},
+ {id:'fairing',name:'フェアリング分離', target:205, tol:28},
+ {id:'meco',name:'1段エンジン停止', target:300, tol:22},
+ {id:'stage',name:'1段分離', target:308, tol:14},
+ {id:'second',name:'2段エンジン点火', target:315, tol:16},
+ {id:'seco',name:'2段エンジン停止', target:720, tol:45},
+ {id:'sat',name:'衛星分離', target:780, tol:45}
+];
+
+let state;
+function reset(){
+ state={
+   running:false, startPerf:0, t:-10, lastPerf:performance.now(),
+   done:new Set(), current:0, score:100, failed:false, complete:false,
+   alt:0, spd:0, phase:'地上待機', shake:0, stars:[],
+   gamepadPrev:{}
+ };
+ for(let i=0;i<140;i++) state.stars.push({x:Math.random(),y:Math.random(),s:Math.random()*1.8+.4});
+ document.querySelectorAll('button[data-action]').forEach(b=>b.classList.remove('done','ready'));
+ document.getElementById('msg').textContent='ミッション開始待機中。\n「主エンジン点火」を押してください。';
+ renderTimeline();
+}
+reset();
+
+function renderTimeline(){
+ const tl=document.getElementById('timeline');
+ tl.innerHTML=steps.map((s,i)=>`<div class="step ${state.done.has(s.id)?'done':''} ${i===state.current?'current':''}"><span class="dot"></span><span>${s.name}</span><span style="margin-left:auto;color:#8fb8d8">${s.target<0?'T'+s.target:'T+'+s.target+'s'}</span></div>`).join('');
+}
+
+function sim(t){
+ if(t<0){state.alt=0;state.spd=0;state.phase='カウントダウン';return}
+ if(t<115){
+   state.alt=Math.max(0, .00055*t*t);
+   state.spd=.00011*t*t;
+   state.phase='1段 + 補助ブースター燃焼';
+ }else if(t<300){
+   state.alt=7.3 + (t-115)*.55;
+   state.spd=1.45 + (t-115)*.023;
+   state.phase='1段燃焼';
+ }else if(t<315){
+   state.alt=109 + (t-300)*.62;
+   state.spd=5.7 + (t-300)*.01;
+   state.phase='段間飛行';
+ }else if(t<720){
+   state.alt=118 + (t-315)*.18;
+   state.spd=5.85 + (t-315)*.0042;
+   state.phase='2段燃焼';
+ }else{
+   state.alt=191 + (t-720)*.02;
+   state.spd=7.55;
+   state.phase='軌道投入';
+ }
+}
+
+function action(id){
+ if(state.complete || state.failed) return;
+ const idx=steps.findIndex(s=>s.id===id);
+ if(idx!==state.current){
+   state.score=Math.max(0,state.score-8);
+   document.getElementById('msg').textContent='⚠ 手順が違います。\n次は「'+steps[state.current].name+'」です。';
+   state.shake=10;
+   return;
+ }
+ const s=steps[idx];
+
+ if(id==='ignite'){
+   state.done.add(id); state.current++;
+   state.running=true; state.startPerf=performance.now()+3000;
+   document.getElementById('msg').textContent='🔥 主エンジン点火！\nT-0で自動的にリフトオフします。';
+ }else{
+   const err=Math.abs(state.t-s.target);
+   if(err>s.tol*2){
+     state.score=Math.max(0,state.score-20);
+     document.getElementById('msg').textContent='❌ タイミングが大きく外れました。\n適切な飛行条件を待ってください。';
+     state.shake=12;
+     return;
+   }
+   if(err>s.tol) state.score=Math.max(0,state.score-8);
+   else if(err>s.tol*.45) state.score=Math.max(0,state.score-3);
+
+   state.done.add(id); state.current++;
+   const quality=err<=s.tol*.45?'PERFECT':err<=s.tol?'GOOD':'LATE/EARLY';
+   document.getElementById('msg').textContent=`${quality}：${s.name}\nMET ${state.t.toFixed(1)} 秒`;
+   state.shake=6;
+ }
+ if(state.current>=steps.length){
+   state.complete=true;
+   document.getElementById('msg').textContent=`🛰️ 衛星分離成功！\nMISSION COMPLETE\n最終スコア：${state.score}`;
+ }
+ renderTimeline(); updateButtons();
+}
+
+document.querySelectorAll('button[data-action]').forEach(b=>b.addEventListener('click',()=>action(b.dataset.action)));
+document.getElementById('reset').onclick=reset;
+
+const keyMap={Enter:'ignite',b:'booster',B:'booster',f:'fairing',F:'fairing',m:'meco',M:'meco',s:'stage',S:'stage','2':'second',c:'seco',C:'seco',d:'sat',D:'sat'};
+addEventListener('keydown',e=>{ if(keyMap[e.key]){e.preventDefault();action(keyMap[e.key]);}});
+
+function pollGamepad(){
+ let gp = null;
+ try{
+   const gps = (navigator.getGamepads && navigator.getGamepads()) || [];
+   for(let i=0;i<gps.length;i++){
+     if(gps[i]) { gp = gps[i]; break; }
+   }
+ }catch(e){
+   return;
+ }
+ if(!gp) return;
+ const map={0:'ignite',1:'booster',2:'fairing',3:'meco',4:'stage',5:'second',6:'seco',7:'sat'};
+ for(const i in map){
+   const id = map[i];
+   const btn = gp.buttons && gp.buttons[i];
+   const pressed = !!(btn && btn.pressed);
+   if(pressed && !state.gamepadPrev[i]) action(id);
+   state.gamepadPrev[i]=pressed;
+ }
+}
+
+function updateButtons(){
+ document.querySelectorAll('button[data-action]').forEach(b=>{
+   const id=b.dataset.action;
+   b.classList.toggle('done',state.done.has(id));
+   b.classList.remove('ready');
+ });
+ if(state.current<steps.length){
+   const s=steps[state.current];
+   const b=document.querySelector(`button[data-action="${s.id}"]`);
+   if(s.id==='ignite' || Math.abs(state.t-s.target)<=s.tol) b?.classList.add('ready');
+ }
+}
+
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ let sx=(Math.random()-.5)*state.shake, sy=(Math.random()-.5)*state.shake;
+ if(state.shake>0)state.shake*=.88;
+ ctx.save();ctx.translate(sx,sy);
+
+ const p=Math.min(1,Math.max(0,state.alt/200));
+ const top=[2,8,18],bot=[20,65,110];
+ const grd=ctx.createLinearGradient(0,0,0,H);
+ grd.addColorStop(0,`rgb(${2+Math.floor(p*0)},${8+Math.floor(p*0)},${18+Math.floor(p*2)})`);
+ grd.addColorStop(1,`rgb(${20-Math.floor(p*18)},${65-Math.floor(p*55)},${110-Math.floor(p*90)})`);
+ ctx.fillStyle=grd;ctx.fillRect(0,0,W,H);
+
+ if(p>.35){
+   ctx.fillStyle='white';
+   for(const st of state.stars){
+     ctx.globalAlpha=Math.min(1,(p-.35)*2.2);
+     ctx.beginPath();ctx.arc(st.x*W,st.y*H,st.s,0,Math.PI*2);ctx.fill();
+   }
+   ctx.globalAlpha=1;
+ }
+
+ const groundY=H*(.82 + p*.25);
+ if(p<.65){
+   ctx.fillStyle='#17334a';ctx.fillRect(0,groundY,W,H-groundY);
+   ctx.fillStyle='#274f6d';ctx.fillRect(0,groundY-6,W,6);
+ }
+
+ const rocketY = state.t<0 ? groundY-150 : H*.58;
+ const rocketX = W*.50;
+ const scale=Math.max(.55,1-p*.28);
+
+ ctx.save();ctx.translate(rocketX,rocketY);ctx.scale(scale,scale);
+
+ // exhaust
+ if(state.done.has('ignite') && !state.done.has('meco')){
+   ctx.fillStyle='#ffd166';
+   ctx.beginPath();ctx.moveTo(-15,70);ctx.lineTo(0,120+Math.random()*35);ctx.lineTo(15,70);ctx.fill();
+   ctx.fillStyle='#ff7b3a';
+   ctx.beginPath();ctx.moveTo(-8,70);ctx.lineTo(0,102+Math.random()*25);ctx.lineTo(8,70);ctx.fill();
+ }
+ if(state.done.has('second') && !state.done.has('seco')){
+   ctx.fillStyle='#8ad7ff';
+   ctx.beginPath();ctx.moveTo(-10,30);ctx.lineTo(0,75+Math.random()*20);ctx.lineTo(10,30);ctx.fill();
+ }
+
+ // boosters
+ if(!state.done.has('booster')){
+   ctx.fillStyle='#d7e0e7';ctx.fillRect(-34,-20,13,90);ctx.fillRect(21,-20,13,90);
+   ctx.fillStyle='#ff8a45';ctx.fillRect(-34,67,13,7);ctx.fillRect(21,67,13,7);
+ }
+
+ // first stage
+ if(!state.done.has('stage')){
+   ctx.fillStyle='#f3f6f8';ctx.fillRect(-20,-10,40,82);
+   ctx.fillStyle='#d54b43';ctx.fillRect(-20,45,40,10);
+ }
+
+ // second stage and fairing / payload
+ ctx.fillStyle='#e7edf2';ctx.fillRect(-15,-72,30,65);
+ if(!state.done.has('fairing')){
+   ctx.fillStyle='#f7fafc';
+   ctx.beginPath();ctx.moveTo(-15,-72);ctx.quadraticCurveTo(0,-120,15,-72);ctx.closePath();ctx.fill();
+ }else{
+   // satellite exposed
+   ctx.fillStyle='#c9a44a';ctx.fillRect(-8,-92,16,18);
+   ctx.fillStyle='#4da3ff';ctx.fillRect(-28,-88,20,10);ctx.fillRect(8,-88,20,10);
+ }
+
+ if(state.complete){
+   // drifting satellite
+   ctx.fillStyle='#c9a44a';ctx.fillRect(55,-110,16,18);
+   ctx.fillStyle='#4da3ff';ctx.fillRect(35,-106,20,10);ctx.fillRect(71,-106,20,10);
+ }
+
+ ctx.restore();
+
+ // HUD
+ ctx.fillStyle='rgba(3,11,20,.65)';ctx.fillRect(14,14,250,78);
+ ctx.strokeStyle='#2a5a82';ctx.strokeRect(14,14,250,78);
+ ctx.fillStyle='#dff5ff';ctx.font='700 16px system-ui';ctx.fillText(state.phase,26,38);
+ ctx.fillStyle='#87b7d8';ctx.font='13px system-ui';ctx.fillText(`ALT ${state.alt.toFixed(1)} km`,26,61);
+ ctx.fillText(`VEL ${state.spd.toFixed(2)} km/s`,26,80);
+
+ ctx.restore();
+}
+
+function loop(now){
+ pollGamepad();
+ if(state.running && !state.complete){
+   state.t=(now-state.startPerf)/1000;
+   sim(state.t);
+ }
+ document.getElementById('met').textContent = state.t<0 ? `T${state.t.toFixed(1)}` : `T+${state.t.toFixed(1)}`;
+ document.getElementById('alt').textContent=state.alt.toFixed(0)+' km';
+ document.getElementById('spd').textContent=state.spd.toFixed(2)+' km/s';
+ document.getElementById('score').textContent=state.score;
+ updateButtons();
+ draw();
+ draw();
+requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
